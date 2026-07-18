@@ -48,6 +48,8 @@
   .range-btn{padding:6px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text-muted);transition:border-color .15s, color .15s;}
   .range-btn:hover{border-color:var(--teal);color:var(--text);}
   .range-btn.active{border-color:var(--teal);color:var(--text);background:#0f1a18;}
+  input[type="date"].range-btn{color-scheme:dark;color:var(--text-muted);font-family:var(--font-mono);}
+  input[type="date"].range-btn:focus{outline:none;border-color:var(--teal);color:var(--text);}
 
   /* Panels */
   .panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px 24px;margin-bottom:20px;}
@@ -154,7 +156,14 @@
   <div class="panel">
     <h2>Z-score history &amp; price</h2>
     <div class="hint" id="historyHint">Rolling z-score of Large Speculator positioning (using an expanding trailing window each week) plotted against the commodity's daily price. Select a commodity above to load this.</div>
-    <div id="rangeButtons" style="display:flex;gap:8px;margin-bottom:14px;"></div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center;">
+      <div id="rangeButtons" style="display:flex;gap:8px;"></div>
+      <div id="rangeDateInputs" style="display:flex;gap:8px;align-items:center;margin-left:auto;">
+        <input type="date" id="rangeStartInput" class="range-btn" style="cursor:text;">
+        <span style="color:var(--text-dim);font-family:var(--font-mono);font-size:12px;">to</span>
+        <input type="date" id="rangeEndInput" class="range-btn" style="cursor:text;">
+      </div>
+    </div>
     <div id="historyChart"></div>
     <div id="currentReadout" style="font-family:var(--font-mono);font-size:12.5px;color:var(--text-muted);margin-top:6px;"></div>
     <div id="priceStatus" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-dim);margin-top:8px;"></div>
@@ -572,7 +581,8 @@ function drawHistoryChart(dates, commZ, specZ, prices) {
 
 // ---------- range control state ----------
 let fullHistoryData = null; // {name, dates, commZ, specZ, prices}
-let currentRangeWeeks = 52; // 0 means "All"
+let currentRangeStart = null; // 'YYYY-MM-DD' or null (= earliest available)
+let currentRangeEnd = null;   // 'YYYY-MM-DD' or null (= latest available)
 const RANGE_OPTIONS = [{ w: 13, label: '13W' }, { w: 26, label: '26W' }, { w: 52, label: '52W' }, { w: 0, label: 'All' }];
 
 function setupRangeButtons() {
@@ -580,10 +590,17 @@ function setupRangeButtons() {
   container.innerHTML = '';
   RANGE_OPTIONS.forEach(opt => {
     const btn = document.createElement('button');
-    btn.className = 'range-btn' + (opt.w === currentRangeWeeks ? ' active' : '');
+    btn.className = 'range-btn';
     btn.textContent = opt.label;
     btn.onclick = () => {
-      currentRangeWeeks = opt.w;
+      if (!fullHistoryData) return;
+      const { dates } = fullHistoryData;
+      const n = dates.length;
+      const startIdx = opt.w === 0 ? 0 : Math.max(0, n - opt.w);
+      currentRangeStart = dates[startIdx];
+      currentRangeEnd = dates[n - 1];
+      document.getElementById('rangeStartInput').value = currentRangeStart;
+      document.getElementById('rangeEndInput').value = currentRangeEnd;
       document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       renderCurrentRange();
@@ -593,13 +610,29 @@ function setupRangeButtons() {
 }
 setupRangeButtons();
 
+// custom date pickers — either one changing re-filters the chart directly
+function onDateRangeInputChange() {
+  const s = document.getElementById('rangeStartInput').value;
+  const e = document.getElementById('rangeEndInput').value;
+  if (!s || !e) return;
+  currentRangeStart = s;
+  currentRangeEnd = e;
+  document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active')); // custom range, no preset highlighted
+  renderCurrentRange();
+}
+document.getElementById('rangeStartInput').addEventListener('change', onDateRangeInputChange);
+document.getElementById('rangeEndInput').addEventListener('change', onDateRangeInputChange);
+
 function renderCurrentRange() {
   if (!fullHistoryData) return;
   const { dates, commZ, specZ, prices } = fullHistoryData;
-  const n = dates.length;
-  const start = currentRangeWeeks === 0 ? 0 : Math.max(0, n - currentRangeWeeks);
-  const sDates = dates.slice(start), sComm = commZ.slice(start), sSpec = specZ.slice(start);
-  const sPrices = prices ? prices.slice(start) : null;
+  const s = currentRangeStart || dates[0];
+  const e = currentRangeEnd || dates[dates.length - 1];
+  const idxs = dates.reduce((acc, d, i) => { if (d >= s && d <= e) acc.push(i); return acc; }, []);
+  const sDates = idxs.map(i => dates[i]);
+  const sComm = idxs.map(i => commZ[i]);
+  const sSpec = idxs.map(i => specZ[i]);
+  const sPrices = prices ? idxs.map(i => prices[i]) : null;
   drawHistoryChart(sDates, sComm, sSpec, sPrices);
   updateCurrentReadout(dates, commZ, specZ, prices); // readout always reflects the true latest week, regardless of zoom
 }
@@ -638,6 +671,21 @@ async function loadHistoryAndPrice(name, dates, comm, spec) {
     manualWrap.style.display = 'block';
   }
   fullHistoryData = { name, dates, commZ, specZ, prices };
+
+  // set date-input bounds to the full available range, default view to last 52 weeks
+  const startInput = document.getElementById('rangeStartInput');
+  const endInput = document.getElementById('rangeEndInput');
+  startInput.min = dates[0]; startInput.max = dates[dates.length - 1];
+  endInput.min = dates[0]; endInput.max = dates[dates.length - 1];
+  const defaultStartIdx = Math.max(0, dates.length - 52);
+  currentRangeStart = dates[defaultStartIdx];
+  currentRangeEnd = dates[dates.length - 1];
+  startInput.value = currentRangeStart;
+  endInput.value = currentRangeEnd;
+  document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+  const btn52 = [...document.querySelectorAll('#rangeButtons .range-btn')].find(b => b.textContent === '52W');
+  if (btn52) btn52.classList.add('active');
+
   renderCurrentRange();
 
   document.getElementById('priceInput').oninput = (e) => {
