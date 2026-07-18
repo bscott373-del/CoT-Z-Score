@@ -45,6 +45,10 @@
   .chip.active{border-color:var(--gold);color:var(--text);background:#1a1710;}
   .dot{width:7px;height:7px;border-radius:50%;flex:none;}
 
+  .range-btn{padding:6px 14px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--text-muted);transition:border-color .15s, color .15s;}
+  .range-btn:hover{border-color:var(--teal);color:var(--text);}
+  .range-btn.active{border-color:var(--teal);color:var(--text);background:#0f1a18;}
+
   /* Panels */
   .panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px 24px;margin-bottom:20px;}
   .panel h2{font-family:var(--font-display);font-size:19px;font-weight:600;margin:0 0 4px;}
@@ -150,7 +154,9 @@
   <div class="panel">
     <h2>Z-score history &amp; price</h2>
     <div class="hint" id="historyHint">Rolling z-score of Large Speculator positioning (using an expanding trailing window each week) plotted against the commodity's daily price. Select a commodity above to load this.</div>
+    <div id="rangeButtons" style="display:flex;gap:8px;margin-bottom:14px;"></div>
     <div id="historyChart"></div>
+    <div id="currentReadout" style="font-family:var(--font-mono);font-size:12.5px;color:var(--text-muted);margin-top:6px;"></div>
     <div id="priceStatus" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-dim);margin-top:8px;"></div>
     <div id="priceManualWrap" style="display:none;margin-top:12px;">
       <label>Price series (optional manual fallback — oldest → newest, aligned to the same weeks as above)</label>
@@ -408,7 +414,7 @@ function drawHistoryChart(dates, commZ, specZ, prices) {
   const w = 900, h = 320, padL = 42, padR = prices ? 46 : 16, padT = 16, padB = 28;
   const innerW = w - padL - padR, innerH = h - padT - padB;
   const n = dates.length;
-  const x = i => padL + (innerW * i) / (n - 1);
+  const x = i => n === 1 ? padL : padL + (innerW * i) / (n - 1);
 
   // z-axis: fixed -3..3
   const zMin = -3, zMax = 3;
@@ -436,8 +442,18 @@ function drawHistoryChart(dates, commZ, specZ, prices) {
     });
     return d;
   }
+  function lastValid(arr) {
+    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return i;
+    return -1;
+  }
   const specPath = linePath(specZ, yZ);
   const commPath = linePath(commZ, yZ);
+
+  // "current" markers — highlight the most recent plotted point on each line
+  let markers = '';
+  const ci = lastValid(commZ), si = lastValid(specZ);
+  if (ci >= 0) markers += `<circle cx="${x(ci).toFixed(1)}" cy="${yZ(commZ[ci]).toFixed(1)}" r="4" fill="var(--teal)" stroke="var(--bg)" stroke-width="1.5"/>`;
+  if (si >= 0) markers += `<circle cx="${x(si).toFixed(1)}" cy="${yZ(specZ[si]).toFixed(1)}" r="4" fill="var(--critical)" stroke="var(--bg)" stroke-width="1.5"/>`;
 
   let priceEls = '';
   if (prices && prices.some(p => p != null)) {
@@ -446,10 +462,12 @@ function drawHistoryChart(dates, commZ, specZ, prices) {
     const yP = p => padT + innerH * (1 - (p - pMin) / ((pMax - pMin) || 1));
     priceEls = `<path d="${linePath(prices, yP)}" fill="none" stroke="var(--gold)" stroke-width="1.6" stroke-dasharray="4 3"/>`;
     priceEls += `<text x="${w-6}" y="${padT+10}" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--gold)">price</text>`;
+    const pi = lastValid(prices);
+    if (pi >= 0) markers += `<circle cx="${x(pi).toFixed(1)}" cy="${yP(prices[pi]).toFixed(1)}" r="3.5" fill="var(--gold)" stroke="var(--bg)" stroke-width="1.5"/>`;
   }
 
   // x-axis date labels (start, mid, end)
-  const labelIdx = [0, Math.floor(n / 2), n - 1];
+  const labelIdx = n === 1 ? [0] : [0, Math.floor(n / 2), n - 1];
   const xLabels = labelIdx.map(i => `<text x="${x(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--text-dim)">${dates[i]}</text>`).join('');
   const yLabels = [3, 1.5, 0, -1.5, -3].map(z => `<text x="${padL - 6}" y="${(yZ(z)+3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--text-dim)">${z}</text>`).join('');
 
@@ -460,10 +478,58 @@ function drawHistoryChart(dates, commZ, specZ, prices) {
     <path d="${commPath}" fill="none" stroke="var(--teal)" stroke-width="1.8"/>
     <path d="${specPath}" fill="none" stroke="var(--critical)" stroke-width="1.8"/>
     ${priceEls}
+    ${markers}
     <text x="${padL}" y="${padT+10}" font-family="var(--font-mono)" font-size="10" fill="var(--teal)">— Commercial z</text>
     <text x="${padL+120}" y="${padT+10}" font-family="var(--font-mono)" font-size="10" fill="var(--critical)">— Speculator z</text>
   </svg>`;
   document.getElementById('historyChart').innerHTML = svg;
+}
+
+// ---------- range control state ----------
+let fullHistoryData = null; // {name, dates, commZ, specZ, prices}
+let currentRangeWeeks = 52; // 0 means "All"
+const RANGE_OPTIONS = [{ w: 13, label: '13W' }, { w: 26, label: '26W' }, { w: 52, label: '52W' }, { w: 0, label: 'All' }];
+
+function setupRangeButtons() {
+  const container = document.getElementById('rangeButtons');
+  container.innerHTML = '';
+  RANGE_OPTIONS.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'range-btn' + (opt.w === currentRangeWeeks ? ' active' : '');
+    btn.textContent = opt.label;
+    btn.onclick = () => {
+      currentRangeWeeks = opt.w;
+      document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderCurrentRange();
+    };
+    container.appendChild(btn);
+  });
+}
+setupRangeButtons();
+
+function renderCurrentRange() {
+  if (!fullHistoryData) return;
+  const { dates, commZ, specZ, prices } = fullHistoryData;
+  const n = dates.length;
+  const start = currentRangeWeeks === 0 ? 0 : Math.max(0, n - currentRangeWeeks);
+  const sDates = dates.slice(start), sComm = commZ.slice(start), sSpec = specZ.slice(start);
+  const sPrices = prices ? prices.slice(start) : null;
+  drawHistoryChart(sDates, sComm, sSpec, sPrices);
+  updateCurrentReadout(dates, commZ, specZ, prices); // readout always reflects the true latest week, regardless of zoom
+}
+
+function updateCurrentReadout(dates, commZ, specZ, prices) {
+  const i = dates.length - 1;
+  const cz = commZ[i], sz = specZ[i];
+  const p = prices ? prices[i] : null;
+  const parts = [];
+  if (cz != null) parts.push(`Commercial z: ${cz >= 0 ? '+' : ''}${cz.toFixed(2)}`);
+  if (sz != null) parts.push(`Speculator z: ${sz >= 0 ? '+' : ''}${sz.toFixed(2)}`);
+  if (p != null) parts.push(`Price: ${p}`);
+  document.getElementById('currentReadout').textContent = parts.length
+    ? `Current (${dates[i]}): ${parts.join('   ·   ')}`
+    : '';
 }
 
 async function loadHistoryAndPrice(name, dates, comm, spec) {
@@ -485,12 +551,14 @@ async function loadHistoryAndPrice(name, dates, comm, spec) {
     priceStatus.textContent = `Live price fetch blocked or unavailable (${err.message}). Paste a price series manually below to add the overlay.`;
     manualWrap.style.display = 'block';
   }
-  drawHistoryChart(dates, commZ, specZ, prices);
+  fullHistoryData = { name, dates, commZ, specZ, prices };
+  renderCurrentRange();
 
   document.getElementById('priceInput').oninput = (e) => {
     const manual = parseSeries(e.target.value);
     if (manual.length === dates.length) {
-      drawHistoryChart(dates, commZ, specZ, manual);
+      fullHistoryData.prices = manual;
+      renderCurrentRange();
     }
   };
 }
