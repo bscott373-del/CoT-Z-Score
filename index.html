@@ -173,7 +173,10 @@
         <input type="date" id="rangeEndInput" class="range-btn" style="cursor:text;">
       </div>
     </div>
-    <div id="historyChart"></div>
+    <div style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:6px;">Z-score</div>
+    <div id="zScoreChart"></div>
+    <div style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin:18px 0 6px;">Price</div>
+    <div id="priceChart"></div>
     <div id="currentReadout" style="font-family:var(--font-mono);font-size:12.5px;color:var(--text-muted);margin-top:6px;"></div>
     <div id="priceStatus" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-dim);margin-top:8px;"></div>
     <div id="priceManualWrap" style="display:none;margin-top:12px;">
@@ -529,24 +532,22 @@ function priceForDate(byDate, dateStr) {
 }
 
 // ---------- history + price chart (SVG) ----------
-function drawHistoryChart(dates, commZ, specZ, prices) {
-  const w = 900, h = 320, padL = 42, padR = prices ? 46 : 16, padT = 16, padB = 28;
+function drawZScoreChart(dates, commZ, specZ) {
+  const w = 900, h = 260, padL = 42, padR = 16, padT = 16, padB = 28;
   const innerW = w - padL - padR, innerH = h - padT - padB;
   const n = dates.length;
   const x = i => n === 1 ? padL : padL + (innerW * i) / (n - 1);
 
-  // z-axis: fixed -3..3
   const zMin = -3, zMax = 3;
   const yZ = z => padT + innerH * (1 - (Math.max(zMin, Math.min(zMax, z)) - zMin) / (zMax - zMin));
 
-  // severity bands (background)
   const zones = [
     { from: -3, to: -2, color: 'var(--critical)' }, { from: -2, to: -1.5, color: 'var(--alert)' },
     { from: -1.5, to: -1, color: 'var(--watch)' }, { from: -1, to: 1, color: 'var(--neutral)' },
     { from: 1, to: 1.5, color: 'var(--watch)' }, { from: 1.5, to: 2, color: 'var(--alert)' },
     { from: 2, to: 3, color: 'var(--critical)' }
   ];
-  let bands = zones.map(z => {
+  const bands = zones.map(z => {
     const y1 = yZ(z.to), y2 = yZ(z.from);
     return `<rect x="${padL}" y="${y1}" width="${innerW}" height="${y2 - y1}" fill="${z.color}" opacity="0.07"/>`;
   }).join('');
@@ -568,24 +569,11 @@ function drawHistoryChart(dates, commZ, specZ, prices) {
   const specPath = linePath(specZ, yZ);
   const commPath = linePath(commZ, yZ);
 
-  // "current" markers — highlight the most recent plotted point on each line
   let markers = '';
   const ci = lastValid(commZ), si = lastValid(specZ);
   if (ci >= 0) markers += `<circle cx="${x(ci).toFixed(1)}" cy="${yZ(commZ[ci]).toFixed(1)}" r="4" fill="var(--teal)" stroke="var(--bg)" stroke-width="1.5"/>`;
   if (si >= 0) markers += `<circle cx="${x(si).toFixed(1)}" cy="${yZ(specZ[si]).toFixed(1)}" r="4" fill="var(--critical)" stroke="var(--bg)" stroke-width="1.5"/>`;
 
-  let priceEls = '';
-  if (prices && prices.some(p => p != null)) {
-    const valid = prices.filter(p => p != null);
-    const pMin = Math.min(...valid), pMax = Math.max(...valid);
-    const yP = p => padT + innerH * (1 - (p - pMin) / ((pMax - pMin) || 1));
-    priceEls = `<path d="${linePath(prices, yP)}" fill="none" stroke="var(--gold)" stroke-width="1.6" stroke-dasharray="4 3"/>`;
-    priceEls += `<text x="${w-6}" y="${padT+10}" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--gold)">price</text>`;
-    const pi = lastValid(prices);
-    if (pi >= 0) markers += `<circle cx="${x(pi).toFixed(1)}" cy="${yP(prices[pi]).toFixed(1)}" r="3.5" fill="var(--gold)" stroke="var(--bg)" stroke-width="1.5"/>`;
-  }
-
-  // x-axis date labels (start, mid, end)
   const labelIdx = n === 1 ? [0] : [0, Math.floor(n / 2), n - 1];
   const xLabels = labelIdx.map(i => `<text x="${x(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--text-dim)">${dates[i]}</text>`).join('');
   const yLabels = [3, 1.5, 0, -1.5, -3].map(z => `<text x="${padL - 6}" y="${(yZ(z)+3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--text-dim)">${z}</text>`).join('');
@@ -596,12 +584,56 @@ function drawHistoryChart(dates, commZ, specZ, prices) {
     ${yLabels}${xLabels}
     <path d="${commPath}" fill="none" stroke="var(--teal)" stroke-width="1.8"/>
     <path d="${specPath}" fill="none" stroke="var(--critical)" stroke-width="1.8"/>
-    ${priceEls}
     ${markers}
     <text x="${padL}" y="${padT+10}" font-family="var(--font-mono)" font-size="10" fill="var(--teal)">— Commercial z</text>
     <text x="${padL+120}" y="${padT+10}" font-family="var(--font-mono)" font-size="10" fill="var(--critical)">— Speculator z</text>
   </svg>`;
-  document.getElementById('historyChart').innerHTML = svg;
+  document.getElementById('zScoreChart').innerHTML = svg;
+}
+
+function drawPriceChart(dates, prices) {
+  const container = document.getElementById('priceChart');
+  if (!prices || !prices.some(p => p != null)) {
+    container.innerHTML = `<div style="font-size:12.5px;color:var(--text-dim);padding:20px 0;">No price data loaded for this range.</div>`;
+    return;
+  }
+  const w = 900, h = 180, padL = 56, padR = 16, padT = 12, padB = 26;
+  const innerW = w - padL - padR, innerH = h - padT - padB;
+  const n = dates.length;
+  const x = i => n === 1 ? padL : padL + (innerW * i) / (n - 1);
+
+  function linePath(arr, yFn) {
+    let d = ''; let started = false;
+    arr.forEach((v, i) => {
+      if (v == null) { started = false; return; }
+      const cmd = started ? 'L' : 'M';
+      d += `${cmd}${x(i).toFixed(1)} ${yFn(v).toFixed(1)} `;
+      started = true;
+    });
+    return d;
+  }
+  function lastValid(arr) {
+    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return i;
+    return -1;
+  }
+
+  const valid = prices.filter(p => p != null);
+  const pMin = Math.min(...valid), pMax = Math.max(...valid);
+  const yP = p => padT + innerH * (1 - (p - pMin) / ((pMax - pMin) || 1));
+  const pricePath = linePath(prices, yP);
+  const pi = lastValid(prices);
+  const marker = pi >= 0 ? `<circle cx="${x(pi).toFixed(1)}" cy="${yP(prices[pi]).toFixed(1)}" r="3.5" fill="var(--gold)" stroke="var(--bg)" stroke-width="1.5"/>` : '';
+
+  const labelIdx = n === 1 ? [0] : [0, Math.floor(n / 2), n - 1];
+  const xLabels = labelIdx.map(i => `<text x="${x(i).toFixed(1)}" y="${h - 6}" text-anchor="middle" font-family="var(--font-mono)" font-size="10" fill="var(--text-dim)">${dates[i]}</text>`).join('');
+  const yLabels = [pMax, (pMax + pMin) / 2, pMin].map(p => `<text x="${padL - 8}" y="${(yP(p)+3).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--text-dim)">${p.toFixed(2)}</text>`).join('');
+
+  const svg = `<svg width="100%" viewBox="0 0 ${w} ${h}" style="max-width:100%;">
+    ${yLabels}${xLabels}
+    <path d="${pricePath}" fill="none" stroke="var(--gold)" stroke-width="1.8"/>
+    ${marker}
+  </svg>`;
+  container.innerHTML = svg;
 }
 
 // ---------- range control state ----------
@@ -658,7 +690,8 @@ function renderCurrentRange() {
   const sComm = idxs.map(i => commZ[i]);
   const sSpec = idxs.map(i => specZ[i]);
   const sPrices = prices ? idxs.map(i => prices[i]) : null;
-  drawHistoryChart(sDates, sComm, sSpec, sPrices);
+  drawZScoreChart(sDates, sComm, sSpec);
+  drawPriceChart(sDates, sPrices);
   updateCurrentReadout(dates, commZ, specZ, prices); // readout always reflects the true latest week, regardless of zoom
 }
 
@@ -728,7 +761,7 @@ const tape = document.getElementById('tape');
 COMMODITIES.forEach(({ name, code }) => {
   const chip = document.createElement('div');
   chip.className = 'chip';
-  chip.innerHTML = `<span class="dot" style="background:var(--border)"></span>${name}`;
+  chip.innerHTML = `<span class="dot" style="background:var(--border)"></span>${name}<span class="sev-label" style="margin-left:4px;font-size:10px;letter-spacing:.06em;color:var(--text-dim);"></span>`;
   chip.onclick = () => loadCommodity(name, code, chip);
   tape.appendChild(chip);
 });
@@ -783,7 +816,10 @@ async function loadCommodity(name, code, chipEl) {
     const commZ = (comm[comm.length-1]-meanOf(comm.slice(0,-1)))/(stdOf(comm.slice(0,-1))||1e-9);
     const specZ = (spec[spec.length-1]-meanOf(spec.slice(0,-1)))/(stdOf(spec.slice(0,-1))||1e-9);
     const dominant = Math.abs(specZ) >= Math.abs(commZ) ? specZ : commZ;
-    dot.style.background = severity(dominant).color;
+    const sev = severity(dominant);
+    dot.style.background = sev.color;
+    const label = chipEl.querySelector('.sev-label');
+    if (label) { label.textContent = sev.label; label.style.color = sev.color; }
   } catch (err) {
     statusEl.textContent = `Couldn't load ${name} from CFTC.gov (${err.message}). Paste figures manually below, or check your network settings.`;
   }
@@ -791,6 +827,26 @@ async function loadCommodity(name, code, chipEl) {
 
 // load Gold by default
 loadCommodity(COMMODITIES[0].name, COMMODITIES[0].code, tape.firstChild);
+
+// pre-populate every other chip's severity dot in the background, without disturbing
+// the currently-loaded commodity's input boxes/chart. Uses fetchMarket's built-in cache,
+// so if you later click one of these, it loads instantly instead of re-fetching.
+document.querySelectorAll('#tape .chip').forEach((chip, idx) => {
+  if (idx === 0) return; // Gold's dot is already set by the default load above
+  const { name, code } = COMMODITIES[idx];
+  fetchMarket(code).then(({ comm, spec }) => {
+    const commZ = (comm[comm.length - 1] - meanOf(comm.slice(0, -1))) / (stdOf(comm.slice(0, -1)) || 1e-9);
+    const specZ = (spec[spec.length - 1] - meanOf(spec.slice(0, -1))) / (stdOf(spec.slice(0, -1)) || 1e-9);
+    const dominant = Math.abs(specZ) >= Math.abs(commZ) ? specZ : commZ;
+    const sev = severity(dominant);
+    chip.querySelector('.dot').style.background = sev.color;
+    const label = chip.querySelector('.sev-label');
+    if (label) { label.textContent = sev.label; label.style.color = sev.color; }
+  }).catch(() => {
+    // leave the dot at its neutral default color if a background fetch fails —
+    // clicking the chip directly will surface the real error message as usual
+  });
+});
 
 // ---------- console helper: re-verify a contract code if CFTC ever renumbers one ----------
 // Run in browser devtools console, e.g.: verifyCommodityCode('GOLD')
