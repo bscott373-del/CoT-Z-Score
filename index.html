@@ -410,9 +410,10 @@ async function fetchPriceSeries(commodityName) {
   const candidates = [
     stooqUrl,
     `https://api.allorigins.win/raw?url=${encodeURIComponent(stooqUrl)}`,
-    `https://corsproxy.io/?url=${encodeURIComponent(stooqUrl)}`
+    `https://corsproxy.io/?${encodeURIComponent(stooqUrl)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(stooqUrl)}`
   ];
-  let lastErr = new Error('no candidates tried');
+  const errors = [];
   for (const url of candidates) {
     try {
       const res = await fetch(url);
@@ -429,11 +430,11 @@ async function fetchPriceSeries(commodityName) {
       priceCache[symbol] = byDate;
       return byDate;
     } catch (err) {
-      lastErr = err;
-      // try the next candidate
+      const host = new URL(url).hostname;
+      errors.push(`${host}: ${err.message}`);
     }
   }
-  throw lastErr;
+  throw new Error(errors.join(' | '));
 }
 
 // find the closest available price on or before a given report date
