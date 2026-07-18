@@ -86,27 +86,7 @@
 </head>
 <body>
 
-<div id="v4-enhancements" style="margin:12px 0;padding:10px;border:1px solid #444;border-radius:8px;">
-<b>Positioning Framework (v4)</b><br>
-Interpretation guide:
-<ul>
-<li>Commercials > 80th percentile and Specs < 20th percentile = Bullish contrarian setup</li>
-<li>Commercials < 20th percentile and Specs > 80th percentile = Bearish contrarian setup</li>
-<li>Otherwise = Neutral / mixed positioning</li>
-</ul>
-</div>
-
 <div class="wrap">
-<div class="panel" id="institutional-panel">
-<h2>Institutional Positioning Summary</h2>
-<div id="signalBox" style="padding:12px;border:1px solid #242A33;border-radius:8px;margin-top:8px;">
-Signal: <strong id="signalText">Calculating...</strong>
-</div>
-<div style="margin-top:10px;font-size:13px;color:#868C97">
-Framework: Commercials high percentile + Specs low percentile = bullish contrarian setup.
-</div>
-</div>
-
 
   <header>
     <div class="eyebrow">CFTC Commitment of Traders — Live Commodity Feed</div>
@@ -118,7 +98,15 @@ Framework: Commercials high percentile + Specs low percentile = bullish contrari
     <div class="tape-label" id="tapeLabel">Commodities — click to load live CFTC data</div>
     <div id="tape"></div>
   </div>
-  <div id="fetchStatus" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-dim);margin:-14px 0 20px;"></div>
+  <div id="fetchStatus" style="font-family:var(--font-mono);font-size:11.5px;color:var(--text-dim);margin:-14px 0 12px;"></div>
+
+  <div class="panel" id="newsPanel" style="padding:16px 20px;">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+      <h2 style="margin:0;font-size:15px;" id="newsHeading">Related news</h2>
+      <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);">via Google News</span>
+    </div>
+    <div id="newsList" style="font-size:13px;color:var(--text-muted);">Select a commodity above to load headlines.</div>
+  </div>
 
   <div class="panel">
     <h2>Weekly net position data</h2>
@@ -419,7 +407,7 @@ async function fetchMarket(code) {
 
 // ---------- rolling z-score (3-year rolling window, same length as input) ----------
 function rollingZ(arr, windowSize = 156, minPoints = 30) {
-  // Fixed trailing window (default 52 weeks), NOT an expanding one. An expanding window
+  // Fixed trailing window (156 weeks ≈ 3 years), NOT an expanding one. An expanding window
   // (using all prior data back to the start of the fetch) causes the standard deviation
   // to stabilize as more history accumulates, which artificially compresses z-scores
   // toward zero for the most recent weeks — flattening the line regardless of what
@@ -745,10 +733,45 @@ COMMODITIES.forEach(({ name, code }) => {
   tape.appendChild(chip);
 });
 
+// ---------- related news via Google News RSS, converted to JSON by rss2json.com ----------
+// No signup needed for light use; rss2json.com is a free CORS-enabled RSS->JSON proxy.
+async function loadNews(commodityName) {
+  const heading = document.getElementById('newsHeading');
+  const list = document.getElementById('newsList');
+  heading.textContent = `Related news — ${commodityName}`;
+  list.textContent = `Loading ${commodityName} headlines…`;
+  try {
+    const query = `${commodityName} price`;
+    const googleNewsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+    const proxyUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(googleNewsUrl)}`;
+    const res = await fetchWithTimeout(proxyUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    if (json.status !== 'ok') throw new Error(json.message || 'feed error');
+    const items = (json.items || []).slice(0, 6);
+    if (!items.length) throw new Error('no articles returned');
+    list.innerHTML = items.map(item => {
+      const date = new Date(item.pubDate);
+      const dateStr = isNaN(date) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      // titles from Google News RSS often end with " - Source Name"
+      const parts = item.title.split(' - ');
+      const source = parts.length > 1 ? parts.pop() : '';
+      const title = parts.join(' - ');
+      return `<div style="padding:9px 0;border-bottom:1px solid var(--border);">
+        <a href="${item.link}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none;font-size:13.5px;line-height:1.4;">${title}</a>
+        <div style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-dim);margin-top:3px;">${source}${source && dateStr ? ' · ' : ''}${dateStr}</div>
+      </div>`;
+    }).join('');
+  } catch (err) {
+    list.textContent = `Couldn't load news for ${commodityName} (${err.message}).`;
+  }
+}
+
 async function loadCommodity(name, code, chipEl) {
   document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
   chipEl.classList.add('active');
   statusEl.textContent = `Fetching ${name} from CFTC.gov…`;
+  loadNews(name);
   try {
     const { comm, spec, dates, lastDate } = await fetchMarket(code);
     document.getElementById('commInput').value = comm.join(', ');
@@ -782,27 +805,6 @@ window.verifyCommodityCode = async function (commodityName) {
   const res = await fetch(url);
   console.table(await res.json());
 };
-</script>
-
-<script>
-setTimeout(function(){
-  try{
-    const cards=[...document.querySelectorAll('.result-card')];
-    if(cards.length>=2){
-      const vals=cards.map(c=>{
-        const t=c.innerText;
-        const m=t.match(/(\d+)%/);
-        return m?parseInt(m[1]):50;
-      });
-      const comm=vals[0], spec=vals[1];
-      let sig='Neutral';
-      if(comm>80 && spec<20) sig='Bullish Contrarian';
-      if(comm<20 && spec>80) sig='Bearish Contrarian';
-      const el=document.getElementById('signalText');
-      if(el) el.textContent=sig + ' (Comm '+comm+'%, Spec '+spec+'%)';
-    }
-  } catch(e){}
-},1500);
 </script>
 
 </body>
