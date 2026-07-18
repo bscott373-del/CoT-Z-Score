@@ -188,7 +188,7 @@ function parseSeries(str){
 function meanOf(arr){ return arr.reduce((a,b)=>a+b,0)/arr.length; }
 function stdOf(arr){
   const m = meanOf(arr);
-  const v = arr.reduce((a,b)=>a+(b-m)*(b-m),0)/arr.length;
+  const v = arr.length > 1 ? arr.reduce((a,b)=>a+(b-m)*(b-m),0)/(arr.length-1) : 0;
   return Math.sqrt(v);
 }
 // normal CDF via erf approximation (Abramowitz & Stegun 7.1.26)
@@ -200,6 +200,10 @@ function erf(x){
   return sign*y;
 }
 function normalCdf(z){ return 0.5*(1+erf(z/Math.sqrt(2))); }
+function empiricalPercentile(hist,current){
+  const count = hist.filter(v => v <= current).length;
+  return Math.round((count / hist.length) * 100);
+}
 
 function severity(z){
   const az = Math.abs(z);
@@ -283,7 +287,7 @@ function computeSide(rawStr, gaugeId, zId, pctId, badgeId, sparkId){
   const hist = series.slice(0,-1);
   const m = meanOf(hist), s = stdOf(hist) || 1e-9;
   const z = (current - m)/s;
-  const pct = Math.round(normalCdf(z)*100);
+  const pct = empiricalPercentile(hist, current);
   const sev = severity(z);
 
   drawGauge(gaugeId, z);
@@ -387,7 +391,7 @@ async function fetchMarket(code) {
 }
 
 // ---------- rolling z-score (expanding trailing window, same length as input) ----------
-function rollingZ(arr, windowSize = 52, minPoints = 20) {
+function rollingZ(arr, windowSize = 156, minPoints = 30) {
   // Fixed trailing window (default 52 weeks), NOT an expanding one. An expanding window
   // (using all prior data back to the start of the fetch) causes the standard deviation
   // to stabilize as more history accumulates, which artificially compresses z-scores
