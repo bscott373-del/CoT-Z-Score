@@ -97,6 +97,16 @@ Interpretation guide:
 </div>
 
 <div class="wrap">
+<div class="panel" id="institutional-panel">
+<h2>Institutional Positioning Summary</h2>
+<div id="signalBox" style="padding:12px;border:1px solid #242A33;border-radius:8px;margin-top:8px;">
+Signal: <strong id="signalText">Calculating...</strong>
+</div>
+<div style="margin-top:10px;font-size:13px;color:#868C97">
+Framework: Commercials high percentile + Specs low percentile = bullish contrarian setup.
+</div>
+</div>
+
 
   <header>
     <div class="eyebrow">CFTC Commitment of Traders — Live Commodity Feed</div>
@@ -773,5 +783,27 @@ window.verifyCommodityCode = async function (commodityName) {
   console.table(await res.json());
 };
 </script>
+
+<script>
+setTimeout(function(){
+  try{
+    const cards=[...document.querySelectorAll('.result-card')];
+    if(cards.length>=2){
+      const vals=cards.map(c=>{
+        const t=c.innerText;
+        const m=t.match(/(\d+)%/);
+        return m?parseInt(m[1]):50;
+      });
+      const comm=vals[0], spec=vals[1];
+      let sig='Neutral';
+      if(comm>80 && spec<20) sig='Bullish Contrarian';
+      if(comm<20 && spec>80) sig='Bearish Contrarian';
+      const el=document.getElementById('signalText');
+      if(el) el.textContent=sig + ' (Comm '+comm+'%, Spec '+spec+'%)';
+    }
+  } catch(e){}
+},1500);
+</script>
+
 </body>
 </html>
