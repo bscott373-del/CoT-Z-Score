@@ -345,19 +345,33 @@ const cache = {}; // code -> {comm:[...], spec:[...], dates:[...], lastDate}
 async function fetchMarket(code) {
   if (cache[code]) return cache[code];
   // Order DESC to grab the MOST RECENT 160 weeks, then reverse to chronological order.
-  // (Ordering ASC with a limit would return the oldest 160 weeks in the dataset instead —
-  // this contract's history goes back to the 1980s/90s, so that bug silently served ancient data.)
-  const url = `${CFTC_BASE}?$where=cftc_contract_market_code='${code}'`
-            + `&$order=report_date_as_yyyy_mm_dd DESC&$limit=160`;
+  // Built with URLSearchParams (not a hand-built template string) so the space in
+  // "report_date_as_yyyy_mm_dd DESC" and the quotes in the $where value are guaranteed
+  // to be correctly percent-encoded — an unencoded space here can cause the API to
+  // silently ignore the sort/filter and fall back to its default (oldest-first) order,
+  // which is what was serving 1990s-era data.
+  const params = new URLSearchParams({
+    '$where': `cftc_contract_market_code='${code}'`,
+    '$order': 'report_date_as_yyyy_mm_dd DESC',
+    '$limit': '160'
+  });
+  const url = `${CFTC_BASE}?${params.toString()}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`CFTC API returned ${res.status}`);
   const rows = await res.json();
   if (!rows.length) throw new Error('No rows returned for this contract code');
   rows.reverse(); // now oldest -> newest
-  const comm = rows.map(r => (+r.comm_positions_long_all) - (+r.comm_positions_short_all));
-  const spec = rows.map(r => (+r.noncomm_positions_long_all) - (+r.noncomm_positions_short_all));
   const dates = rows.map(r => r.report_date_as_yyyy_mm_dd.slice(0, 10));
   const lastDate = dates[dates.length - 1];
+  // Sanity check: the newest row should be recent. If it's more than ~60 days old,
+  // the $where/$order likely didn't apply as intended — surface that instead of
+  // silently plotting stale data.
+  const daysOld = (Date.now() - new Date(lastDate).getTime()) / 86400000;
+  if (daysOld > 60) {
+    throw new Error(`API returned stale data (latest row: ${lastDate}) — filter/sort may not have applied`);
+  }
+  const comm = rows.map(r => (+r.comm_positions_long_all) - (+r.comm_positions_short_all));
+  const spec = rows.map(r => (+r.noncomm_positions_long_all) - (+r.noncomm_positions_short_all));
   const result = { comm, spec, dates, lastDate };
   cache[code] = result;
   return result;
@@ -605,9 +619,13 @@ loadCommodity(COMMODITIES[0].name, COMMODITIES[0].code, tape.firstChild);
 // ---------- console helper: re-verify a contract code if CFTC ever renumbers one ----------
 // Run in browser devtools console, e.g.: verifyCommodityCode('GOLD')
 window.verifyCommodityCode = async function (commodityName) {
-  const url = `${CFTC_BASE}?$select=contract_market_name,cftc_contract_market_code`
-            + `&$where=commodity_name='${commodityName.toUpperCase()}'`
-            + `&$group=contract_market_name,cftc_contract_market_code&$limit=20`;
+  const params = new URLSearchParams({
+    '$select': 'contract_market_name,cftc_contract_market_code',
+    '$where': `commodity_name='${commodityName.toUpperCase()}'`,
+    '$group': 'contract_market_name,cftc_contract_market_code',
+    '$limit': '20'
+  });
+  const url = `${CFTC_BASE}?${params.toString()}`;
   const res = await fetch(url);
   console.table(await res.json());
 };
