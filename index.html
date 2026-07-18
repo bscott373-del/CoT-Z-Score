@@ -401,19 +401,39 @@ async function fetchPriceSeries(commodityName) {
   const symbol = STOOQ_SYMBOLS[commodityName];
   if (!symbol) return null;
   if (priceCache[symbol]) return priceCache[symbol];
-  const url = `https://stooq.com/q/d/l/?s=${symbol}&i=d`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Stooq returned ${res.status}`);
-  const text = await res.text();
-  if (!text || text.startsWith('<')) throw new Error('Unexpected response (likely blocked)');
-  const lines = text.trim().split('\n').slice(1); // skip header row
-  const byDate = {};
-  lines.forEach(line => {
-    const cols = line.split(',');
-    if (cols.length >= 5) byDate[cols[0]] = parseFloat(cols[4]); // Close
-  });
-  priceCache[symbol] = byDate;
-  return byDate;
+  const stooqUrl = `https://stooq.com/q/d/l/?s=${symbol}&i=d`;
+  // Try a direct fetch first, then fall back through a couple of public CORS proxies —
+  // Stooq's endpoint doesn't send an Access-Control-Allow-Origin header, so a direct
+  // browser fetch from a different domain (like your github.io page) gets silently
+  // blocked even though the request itself succeeds. The proxies re-serve the same
+  // content with permissive CORS headers attached.
+  const candidates = [
+    stooqUrl,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(stooqUrl)}`,
+    `https://corsproxy.io/?url=${encodeURIComponent(stooqUrl)}`
+  ];
+  let lastErr = new Error('no candidates tried');
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      if (!text || /<html/i.test(text)) throw new Error('non-CSV response (likely blocked)');
+      const lines = text.trim().split('\n').slice(1); // skip header row
+      const byDate = {};
+      lines.forEach(line => {
+        const cols = line.split(',');
+        if (cols.length >= 5 && cols[0] && !isNaN(parseFloat(cols[4]))) byDate[cols[0]] = parseFloat(cols[4]); // Close
+      });
+      if (Object.keys(byDate).length === 0) throw new Error('parsed zero rows');
+      priceCache[symbol] = byDate;
+      return byDate;
+    } catch (err) {
+      lastErr = err;
+      // try the next candidate
+    }
+  }
+  throw lastErr;
 }
 
 // find the closest available price on or before a given report date
