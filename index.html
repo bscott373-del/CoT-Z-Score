@@ -383,14 +383,20 @@ async function fetchMarket(code) {
   if (daysOld > 60) {
     throw new Error(`API returned stale data (latest row: ${lastDate}) — filter/sort may not have applied`);
   }
-  const comm = rows.map(r => (+r.comm_positions_long_all) - (+r.comm_positions_short_all));
-  const spec = rows.map(r => (+r.noncomm_positions_long_all) - (+r.noncomm_positions_short_all));
+  const comm = rows.map(r => {
+    const oi = +(r.open_interest_all || r.open_interest || 1);
+    return 100 * (((+r.comm_positions_long_all) - (+r.comm_positions_short_all)) / oi);
+  });
+  const spec = rows.map(r => {
+    const oi = +(r.open_interest_all || r.open_interest || 1);
+    return 100 * (((+r.noncomm_positions_long_all) - (+r.noncomm_positions_short_all)) / oi);
+  });
   const result = { comm, spec, dates, lastDate };
   cache[code] = result;
   return result;
 }
 
-// ---------- rolling z-score (expanding trailing window, same length as input) ----------
+// ---------- rolling z-score (3-year rolling window, same length as input) ----------
 function rollingZ(arr, windowSize = 156, minPoints = 30) {
   // Fixed trailing window (default 52 weeks), NOT an expanding one. An expanding window
   // (using all prior data back to the start of the fetch) causes the standard deviation
