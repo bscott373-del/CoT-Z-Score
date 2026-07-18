@@ -394,83 +394,93 @@ function rollingZ(arr, minPoints = 20) {
 // through commodities, since results are cached per session.
 const ALPHA_VANTAGE_KEY = '8C0SA3BUKX02TOON';
 
-// Alpha Vantage's dedicated commodity endpoints, PLUS gold/silver via FX_DAILY —
-// XAU (gold) and XAG (silver) are treated as physical currency codes for a troy ounce,
-// same mechanism as any USD/EUR pair. Note: WTI/Natural Gas/Gold/Silver are daily;
-// Copper, Wheat, and Corn are monthly-only on this API. Soybeans has no dedicated
-// endpoint on Alpha Vantage — use the manual price paste box for that one.
+// Alpha Vantage's dedicated commodity endpoints (grains, energy, copper). Gold/Silver are
+// handled separately below via gold-api.com, since Alpha Vantage's free tier has no
+// historical time series for precious metals.
 const ALPHA_VANTAGE_SYMBOLS = {
-  "Gold":        { type: "fx", from: "XAU" },
-  "Silver":      { type: "fx", from: "XAG" },
-  "Crude Oil":   { type: "commodity", fn: "WTI",         interval: "daily" },
-  "Natural Gas": { type: "commodity", fn: "NATURAL_GAS", interval: "daily" },
-  "Copper":      { type: "commodity", fn: "COPPER",      interval: "monthly" },
-  "Wheat":       { type: "commodity", fn: "WHEAT",       interval: "monthly" },
-  "Corn":        { type: "commodity", fn: "CORN",        interval: "monthly" }
+  "Crude Oil":   { fn: "WTI",         interval: "daily" },
+  "Natural Gas": { fn: "NATURAL_GAS", interval: "daily" },
+  "Copper":      { fn: "COPPER",      interval: "monthly" },
+  "Wheat":       { fn: "WHEAT",       interval: "monthly" },
+  "Corn":        { fn: "CORN",        interval: "monthly" }
 };
+
+// ---------- gold-api.com — Gold & Silver history (free tier: 10 requests/hour) ----------
+// Sign up free at https://gold-api.com/signup, then paste your key below.
+const GOLD_API_KEY = 'fa59a8de65c2f236c3659de940a29a86448510ffe1bf73b1188346b3d07c1245';
+const GOLD_API_SYMBOLS = { "Gold": "XAU", "Silver": "XAG" };
+
 const priceCache = {};
 
-async function fetchWithTimeout(url, ms = 10000) {
+async function fetchWithTimeout(url, options = {}, ms = 10000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { signal: controller.signal });
+    return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function fetchPriceSeries(commodityName) {
+async function fetchGoldApiSeries(commodityName, fromDateStr, toDateStr) {
+  const symbol = GOLD_API_SYMBOLS[commodityName];
+  if (!symbol) return null;
+  if (priceCache[symbol]) return priceCache[symbol];
+  if (!GOLD_API_KEY || GOLD_API_KEY === 'YOUR_GOLD_API_KEY_HERE') {
+    throw new Error('Add your free gold-api.com key at the top of the script (GOLD_API_KEY)');
+  }
+  const startTs = Math.floor(new Date(fromDateStr).getTime() / 1000) - 86400 * 7;
+  const endTs = Math.floor(new Date(toDateStr).getTime() / 1000) + 86400;
+  const params = new URLSearchParams({
+    symbol, startTimestamp: String(startTs), endTimestamp: String(endTs),
+    groupBy: 'day', aggregation: 'avg', orderBy: 'asc'
+  });
+  const url = `https://api.gold-api.com/history?${params.toString()}`;
+  const res = await fetchWithTimeout(url, { headers: { 'x-api-key': GOLD_API_KEY } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} (free tier: 10 requests/hour)`);
+  const rows = await res.json();
+  if (!Array.isArray(rows) || !rows.length) throw new Error('No data returned');
+  const byDate = {};
+  rows.forEach(row => {
+    const day = row.day; // "YYYY-MM-DD"
+    const v = row.avg_price;
+    if (day && typeof v === 'number') byDate[day] = v;
+  });
+  if (Object.keys(byDate).length === 0) throw new Error('Parsed zero rows');
+  priceCache[symbol] = byDate;
+  return byDate;
+}
+
+async function fetchAlphaVantageSeries(commodityName) {
   const spec = ALPHA_VANTAGE_SYMBOLS[commodityName];
-  if (!spec) return null; // no mapping for this commodity — manual paste box handles it
-  const cacheKey = spec.type === 'fx' ? spec.from : spec.fn;
-  if (priceCache[cacheKey]) return priceCache[cacheKey];
+  if (!spec) return null;
+  if (priceCache[spec.fn]) return priceCache[spec.fn];
   if (!ALPHA_VANTAGE_KEY || ALPHA_VANTAGE_KEY === 'YOUR_KEY_HERE') {
     throw new Error('Add your free Alpha Vantage key at the top of the script (ALPHA_VANTAGE_KEY)');
   }
-
-  let byDate = {};
-  if (spec.type === 'fx') {
-    const params = new URLSearchParams({
-      function: 'FX_DAILY',
-      from_symbol: spec.from,
-      to_symbol: 'USD',
-      outputsize: 'full',
-      apikey: ALPHA_VANTAGE_KEY
-    });
-    const url = `https://www.alphavantage.co/query?${params.toString()}`;
-    const res = await fetchWithTimeout(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
-    if (json['Error Message']) throw new Error(json['Error Message']);
-    if (json['Note'] || json['Information']) throw new Error('Rate limit hit (free tier: 25/day, 5/min) — wait a moment and retry');
-    const series = json['Time Series FX (Daily)'];
-    if (!series) throw new Error('No FX data returned');
-    Object.entries(series).forEach(([date, row]) => {
-      const v = parseFloat(row['4. close']);
-      if (!isNaN(v)) byDate[date] = v;
-    });
-  } else {
-    const params = new URLSearchParams({
-      function: spec.fn,
-      interval: spec.interval,
-      apikey: ALPHA_VANTAGE_KEY
-    });
-    const url = `https://www.alphavantage.co/query?${params.toString()}`;
-    const res = await fetchWithTimeout(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
-    if (json['Error Message']) throw new Error(json['Error Message']);
-    if (json['Note'] || json['Information']) throw new Error('Rate limit hit (free tier: 25/day, 5/min) — wait a moment and retry');
-    if (!json.data || !json.data.length) throw new Error('No data returned for this symbol');
-    json.data.forEach(row => {
-      const v = parseFloat(row.value);
-      if (row.date && !isNaN(v)) byDate[row.date] = v;
-    });
-  }
+  const params = new URLSearchParams({ function: spec.fn, interval: spec.interval, apikey: ALPHA_VANTAGE_KEY });
+  const url = `https://www.alphavantage.co/query?${params.toString()}`;
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json();
+  if (json['Error Message']) throw new Error(json['Error Message']);
+  if (json['Note'] || json['Information']) throw new Error('Rate limit hit (free tier: 25/day, 5/min) — wait a moment and retry');
+  if (!json.data || !json.data.length) throw new Error('No data returned for this symbol');
+  const byDate = {};
+  json.data.forEach(row => {
+    const v = parseFloat(row.value);
+    if (row.date && !isNaN(v)) byDate[row.date] = v;
+  });
   if (Object.keys(byDate).length === 0) throw new Error('Parsed zero rows');
-  priceCache[cacheKey] = byDate;
+  priceCache[spec.fn] = byDate;
   return byDate;
+}
+
+// dispatches to the right free API depending on which commodity was picked
+async function fetchPriceSeries(commodityName, fromDateStr, toDateStr) {
+  if (GOLD_API_SYMBOLS[commodityName]) return fetchGoldApiSeries(commodityName, fromDateStr, toDateStr);
+  if (ALPHA_VANTAGE_SYMBOLS[commodityName]) return fetchAlphaVantageSeries(commodityName);
+  return null; // Soybeans — no free source found yet; manual paste box handles it
 }
 
 // find the closest available price on or before a given report date
@@ -612,15 +622,16 @@ async function loadHistoryAndPrice(name, dates, comm, spec) {
   const priceStatus = document.getElementById('priceStatus');
   const manualWrap = document.getElementById('priceManualWrap');
   let prices = null;
-  priceStatus.textContent = `Fetching ${name} price history from Stooq…`;
+  priceStatus.textContent = `Fetching ${name} price history…`;
   manualWrap.style.display = 'none';
   try {
-    const byDate = await fetchPriceSeries(name);
+    const byDate = await fetchPriceSeries(name, dates[0], dates[dates.length - 1]);
     if (byDate) {
       prices = dates.map(d => priceForDate(byDate, d));
-      priceStatus.textContent = `Price overlay: daily close via Stooq (${name}).`;
+      priceStatus.textContent = `Price overlay loaded for ${name}.`;
     } else {
-      priceStatus.textContent = `No price symbol mapped for ${name} yet.`;
+      priceStatus.textContent = `No automatic price source for ${name} yet — paste one manually below.`;
+      manualWrap.style.display = 'block';
     }
   } catch (err) {
     priceStatus.textContent = `Live price fetch blocked or unavailable (${err.message}). Paste a price series manually below to add the overlay.`;
