@@ -387,10 +387,16 @@ async function fetchMarket(code) {
 }
 
 // ---------- rolling z-score (expanding trailing window, same length as input) ----------
-function rollingZ(arr, minPoints = 20) {
+function rollingZ(arr, windowSize = 52, minPoints = 20) {
+  // Fixed trailing window (default 52 weeks), NOT an expanding one. An expanding window
+  // (using all prior data back to the start of the fetch) causes the standard deviation
+  // to stabilize as more history accumulates, which artificially compresses z-scores
+  // toward zero for the most recent weeks — flattening the line regardless of what
+  // positioning is actually doing. A fixed window keeps every point comparably scaled.
   const z = new Array(arr.length).fill(null);
   for (let i = minPoints; i < arr.length; i++) {
-    const hist = arr.slice(0, i);
+    const start = Math.max(0, i - windowSize);
+    const hist = arr.slice(start, i);
     const m = meanOf(hist), s = stdOf(hist) || 1e-9;
     z[i] = (arr[i] - m) / s;
   }
