@@ -392,7 +392,7 @@ function rollingZ(arr, minPoints = 20) {
 // Get a free key (instant, no credit card) at https://www.alphavantage.co/support/#api-key
 // then paste it in below. Free tier: 25 requests/day, 5/minute — plenty for manual clicking
 // through commodities, since results are cached per session.
-const ALPHA_VANTAGE_KEY = 'YOUR_KEY_HERE';
+const ALPHA_VANTAGE_KEY = '8C0SA3BUKX02TOON';
 
 // Alpha Vantage's dedicated commodity endpoints, PLUS gold/silver via FX_DAILY —
 // XAU (gold) and XAG (silver) are treated as physical currency codes for a troy ounce,
@@ -425,7 +425,7 @@ async function fetchPriceSeries(commodityName) {
   if (!spec) return null; // no mapping for this commodity — manual paste box handles it
   const cacheKey = spec.type === 'fx' ? spec.from : spec.fn;
   if (priceCache[cacheKey]) return priceCache[cacheKey];
-  if (!ALPHA_VANTAGE_KEY || ALPHA_VANTAGE_KEY === 'YOUR_KEY_HERE') {
+  if (!ALPHA_VANTAGE_KEY || ALPHA_VANTAGE_KEY === '8C0SA3BUKX02TOON') {
     throw new Error('Add your free Alpha Vantage key at the top of the script (ALPHA_VANTAGE_KEY)');
   }
 
