@@ -388,53 +388,89 @@ function rollingZ(arr, minPoints = 20) {
   return z;
 }
 
-// ---------- free daily price feed (Stooq, no API key) ----------
-// Stooq symbols: metals use spot pairs, others use continuous front-month futures.
-const STOOQ_SYMBOLS = {
-  "Gold": "xauusd", "Silver": "xagusd", "Copper": "hg.f",
-  "Crude Oil": "cl.f", "Natural Gas": "ng.f",
-  "Corn": "c.f", "Wheat": "w.f", "Soybeans": "s.f"
+// ---------- daily/monthly price feed via Alpha Vantage (free tier, no proxy needed) ----------
+// Get a free key (instant, no credit card) at https://www.alphavantage.co/support/#api-key
+// then paste it in below. Free tier: 25 requests/day, 5/minute — plenty for manual clicking
+// through commodities, since results are cached per session.
+const ALPHA_VANTAGE_KEY = 'YOUR_KEY_HERE';
+
+// Alpha Vantage's dedicated commodity endpoints, PLUS gold/silver via FX_DAILY —
+// XAU (gold) and XAG (silver) are treated as physical currency codes for a troy ounce,
+// same mechanism as any USD/EUR pair. Note: WTI/Natural Gas/Gold/Silver are daily;
+// Copper, Wheat, and Corn are monthly-only on this API. Soybeans has no dedicated
+// endpoint on Alpha Vantage — use the manual price paste box for that one.
+const ALPHA_VANTAGE_SYMBOLS = {
+  "Gold":        { type: "fx", from: "XAU" },
+  "Silver":      { type: "fx", from: "XAG" },
+  "Crude Oil":   { type: "commodity", fn: "WTI",         interval: "daily" },
+  "Natural Gas": { type: "commodity", fn: "NATURAL_GAS", interval: "daily" },
+  "Copper":      { type: "commodity", fn: "COPPER",      interval: "monthly" },
+  "Wheat":       { type: "commodity", fn: "WHEAT",       interval: "monthly" },
+  "Corn":        { type: "commodity", fn: "CORN",        interval: "monthly" }
 };
 const priceCache = {};
 
-async function fetchPriceSeries(commodityName) {
-  const symbol = STOOQ_SYMBOLS[commodityName];
-  if (!symbol) return null;
-  if (priceCache[symbol]) return priceCache[symbol];
-  const stooqUrl = `https://stooq.com/q/d/l/?s=${symbol}&i=d`;
-  // Try a direct fetch first, then fall back through a couple of public CORS proxies —
-  // Stooq's endpoint doesn't send an Access-Control-Allow-Origin header, so a direct
-  // browser fetch from a different domain (like your github.io page) gets silently
-  // blocked even though the request itself succeeds. The proxies re-serve the same
-  // content with permissive CORS headers attached.
-  const candidates = [
-    stooqUrl,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(stooqUrl)}`,
-    `https://corsproxy.io/?${encodeURIComponent(stooqUrl)}`,
-    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(stooqUrl)}`
-  ];
-  const errors = [];
-  for (const url of candidates) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      if (!text || /<html/i.test(text)) throw new Error('non-CSV response (likely blocked)');
-      const lines = text.trim().split('\n').slice(1); // skip header row
-      const byDate = {};
-      lines.forEach(line => {
-        const cols = line.split(',');
-        if (cols.length >= 5 && cols[0] && !isNaN(parseFloat(cols[4]))) byDate[cols[0]] = parseFloat(cols[4]); // Close
-      });
-      if (Object.keys(byDate).length === 0) throw new Error('parsed zero rows');
-      priceCache[symbol] = byDate;
-      return byDate;
-    } catch (err) {
-      const host = new URL(url).hostname;
-      errors.push(`${host}: ${err.message}`);
-    }
+async function fetchWithTimeout(url, ms = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
   }
-  throw new Error(errors.join(' | '));
+}
+
+async function fetchPriceSeries(commodityName) {
+  const spec = ALPHA_VANTAGE_SYMBOLS[commodityName];
+  if (!spec) return null; // no mapping for this commodity — manual paste box handles it
+  const cacheKey = spec.type === 'fx' ? spec.from : spec.fn;
+  if (priceCache[cacheKey]) return priceCache[cacheKey];
+  if (!ALPHA_VANTAGE_KEY || ALPHA_VANTAGE_KEY === 'YOUR_KEY_HERE') {
+    throw new Error('Add your free Alpha Vantage key at the top of the script (ALPHA_VANTAGE_KEY)');
+  }
+
+  let byDate = {};
+  if (spec.type === 'fx') {
+    const params = new URLSearchParams({
+      function: 'FX_DAILY',
+      from_symbol: spec.from,
+      to_symbol: 'USD',
+      outputsize: 'full',
+      apikey: ALPHA_VANTAGE_KEY
+    });
+    const url = `https://www.alphavantage.co/query?${params.toString()}`;
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    if (json['Error Message']) throw new Error(json['Error Message']);
+    if (json['Note'] || json['Information']) throw new Error('Rate limit hit (free tier: 25/day, 5/min) — wait a moment and retry');
+    const series = json['Time Series FX (Daily)'];
+    if (!series) throw new Error('No FX data returned');
+    Object.entries(series).forEach(([date, row]) => {
+      const v = parseFloat(row['4. close']);
+      if (!isNaN(v)) byDate[date] = v;
+    });
+  } else {
+    const params = new URLSearchParams({
+      function: spec.fn,
+      interval: spec.interval,
+      apikey: ALPHA_VANTAGE_KEY
+    });
+    const url = `https://www.alphavantage.co/query?${params.toString()}`;
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    if (json['Error Message']) throw new Error(json['Error Message']);
+    if (json['Note'] || json['Information']) throw new Error('Rate limit hit (free tier: 25/day, 5/min) — wait a moment and retry');
+    if (!json.data || !json.data.length) throw new Error('No data returned for this symbol');
+    json.data.forEach(row => {
+      const v = parseFloat(row.value);
+      if (row.date && !isNaN(v)) byDate[row.date] = v;
+    });
+  }
+  if (Object.keys(byDate).length === 0) throw new Error('Parsed zero rows');
+  priceCache[cacheKey] = byDate;
+  return byDate;
 }
 
 // find the closest available price on or before a given report date
