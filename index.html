@@ -344,12 +344,16 @@ const cache = {}; // code -> {comm:[...], spec:[...], dates:[...], lastDate}
 
 async function fetchMarket(code) {
   if (cache[code]) return cache[code];
+  // Order DESC to grab the MOST RECENT 160 weeks, then reverse to chronological order.
+  // (Ordering ASC with a limit would return the oldest 160 weeks in the dataset instead —
+  // this contract's history goes back to the 1980s/90s, so that bug silently served ancient data.)
   const url = `${CFTC_BASE}?$where=cftc_contract_market_code='${code}'`
-            + `&$order=report_date_as_yyyy_mm_dd ASC&$limit=160`;
+            + `&$order=report_date_as_yyyy_mm_dd DESC&$limit=160`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`CFTC API returned ${res.status}`);
   const rows = await res.json();
   if (!rows.length) throw new Error('No rows returned for this contract code');
+  rows.reverse(); // now oldest -> newest
   const comm = rows.map(r => (+r.comm_positions_long_all) - (+r.comm_positions_short_all));
   const spec = rows.map(r => (+r.noncomm_positions_long_all) - (+r.noncomm_positions_short_all));
   const dates = rows.map(r => r.report_date_as_yyyy_mm_dd.slice(0, 10));
