@@ -263,23 +263,36 @@ function drawGauge(containerId, z){
 
 // ---------- sparkline ----------
 function drawSpark(containerId, arr){
-  if(arr.length<2){ document.getElementById(containerId).innerHTML=''; return; }
-  const w=320,h=64,pad=6;
+  const container = document.getElementById(containerId);
+  if(arr.length<2){ container.innerHTML=''; return; }
+  const w=420, h=140, padL=54, padR=14, padT=14, padB=24;
+  const innerW = w-padL-padR, innerH = h-padT-padB;
   const min=Math.min(...arr), max=Math.max(...arr);
   const range = (max-min)||1;
-  const step = (w-pad*2)/(arr.length-1);
-  const pts = arr.map((v,i)=>{
-    const x = pad + i*step;
-    const y = h-pad - ((v-min)/range)*(h-pad*2);
-    return [x,y];
-  });
+  const x = i => padL + (innerW*i)/(arr.length-1);
+  const y = v => padT + innerH - ((v-min)/range)*innerH;
+  const pts = arr.map((v,i)=>[x(i), y(v)]);
   const path = pts.map((p,i)=> (i===0?'M':'L')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const areaPath = path + ` L${pts[pts.length-1][0].toFixed(1)} ${(padT+innerH).toFixed(1)} L${pts[0][0].toFixed(1)} ${(padT+innerH).toFixed(1)} Z`;
+
+  // gridlines at min/mid/max, with value labels
+  const gridVals = [max, (max+min)/2, min];
+  const gridLines = gridVals.map(v => {
+    const gy = y(v).toFixed(1);
+    return `<line x1="${padL}" y1="${gy}" x2="${w-padR}" y2="${gy}" stroke="var(--border)" stroke-width="1"/>
+            <text x="${padL-8}" y="${(+gy+3)}" text-anchor="end" font-family="var(--font-mono)" font-size="10" fill="var(--text-dim)">${v.toLocaleString(undefined,{maximumFractionDigits:0})}</text>`;
+  }).join('');
+
   const lastX = pts[pts.length-1][0], lastY = pts[pts.length-1][1];
-  const svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-    <path d="${path}" fill="none" stroke="var(--teal)" stroke-width="1.6"/>
-    <circle cx="${lastX}" cy="${lastY}" r="3.5" fill="var(--gold)"/>
+  const lastVal = arr[arr.length-1];
+  const svg = `<svg width="100%" viewBox="0 0 ${w} ${h}" style="max-width:100%;">
+    ${gridLines}
+    <path d="${areaPath}" fill="var(--teal)" opacity="0.08"/>
+    <path d="${path}" fill="none" stroke="var(--teal)" stroke-width="1.8"/>
+    <circle cx="${lastX}" cy="${lastY}" r="4" fill="var(--gold)" stroke="var(--bg)" stroke-width="1.5"/>
+    <text x="${lastX}" y="${(lastY-10).toFixed(1)}" text-anchor="end" font-family="var(--font-mono)" font-size="10.5" fill="var(--gold)">${lastVal.toLocaleString(undefined,{maximumFractionDigits:0})}</text>
   </svg>`;
-  document.getElementById(containerId).innerHTML = svg;
+  container.innerHTML = svg;
 }
 
 // ---------- main compute ----------
@@ -472,7 +485,7 @@ function priceForDate(byDate, dateStr) {
 
 // ---------- history + price chart (SVG) ----------
 function drawZScoreChart(dates, commZ, specZ) {
-  const w = 900, h = 260, padL = 42, padR = 16, padT = 16, padB = 28;
+  const w = 900, h = 170, padL = 42, padR = 16, padT = 12, padB = 24;
   const innerW = w - padL - padR, innerH = h - padT - padB;
   const n = dates.length;
   const x = i => n === 1 ? padL : padL + (innerW * i) / (n - 1);
