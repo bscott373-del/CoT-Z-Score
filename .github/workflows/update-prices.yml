@@ -1,0 +1,35 @@
+name: Update commodity prices
+
+on:
+  schedule:
+    # Runs daily at 12:00 UTC. Adjust the cron expression if you want a
+    # different cadence (e.g. weekly, to match the Friday COT release).
+    - cron: '0 12 * * *'
+  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab
+
+permissions:
+  contents: write   # needed so the workflow can commit prices.json back to the repo
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install yfinance
+        run: pip install yfinance
+
+      - name: Fetch prices
+        run: python fetch_prices.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add prices.json
+          git diff --quiet --cached || git commit -m "Update commodity prices [automated]"
+          git push
