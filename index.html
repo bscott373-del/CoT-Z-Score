@@ -425,29 +425,13 @@ function rollingZ(arr, windowSize = 156, minPoints = 30) {
   return z;
 }
 
-// ---------- daily/monthly price feed via Alpha Vantage (free tier, no proxy needed) ----------
-// Get a free key (instant, no credit card) at https://www.alphavantage.co/support/#api-key
-// then paste it in below. Free tier: 25 requests/day, 5/minute — plenty for manual clicking
-// through commodities, since results are cached per session.
-const ALPHA_VANTAGE_KEY = '8C0SA3BUKX02TOON';
-
-// Alpha Vantage's dedicated commodity endpoints (grains, energy, copper). Gold/Silver are
-// handled separately below via gold-api.com, since Alpha Vantage's free tier has no
-// historical time series for precious metals.
-const ALPHA_VANTAGE_SYMBOLS = {
-  "Crude Oil":   { fn: "WTI",         interval: "daily" },
-  "Natural Gas": { fn: "NATURAL_GAS", interval: "daily" },
-  "Copper":      { fn: "COPPER",      interval: "monthly" },
-  "Wheat":       { fn: "WHEAT",       interval: "monthly" },
-  "Corn":        { fn: "CORN",        interval: "monthly" }
-};
-
-// ---------- gold-api.com — Gold & Silver history (free tier: 10 requests/hour) ----------
-// Sign up free at https://gold-api.com/signup, then paste your key below.
-const GOLD_API_KEY = 'fa59a8de65c2f236c3659de940a29a86448510ffe1bf73b1188346b3d07c1245';
-const GOLD_API_SYMBOLS = { "Gold": "XAU", "Silver": "XAG" };
-
-const priceCache = {};
+// ---------- commodity prices via yfinance, pre-fetched by a scheduled GitHub Action ----------
+// prices.json lives in this same repo, written by fetch_prices.py + the
+// .github/workflows/update-prices.yml scheduled workflow. Because it's fetched from the
+// same origin as this page (not a third-party API), there's no CORS issue to work around —
+// this replaces the earlier Alpha Vantage / gold-api.com approach entirely, and covers all
+// 8 commodities (including Soybeans, which neither of those free APIs offered).
+let pricesJsonCache = null;
 
 async function fetchWithTimeout(url, options = {}, ms = 10000) {
   const controller = new AbortController();
@@ -459,65 +443,20 @@ async function fetchWithTimeout(url, options = {}, ms = 10000) {
   }
 }
 
-async function fetchGoldApiSeries(commodityName, fromDateStr, toDateStr) {
-  const symbol = GOLD_API_SYMBOLS[commodityName];
-  if (!symbol) return null;
-  if (priceCache[symbol]) return priceCache[symbol];
-  if (!GOLD_API_KEY || GOLD_API_KEY === 'YOUR_GOLD_API_KEY_HERE') {
-    throw new Error('Add your free gold-api.com key at the top of the script (GOLD_API_KEY)');
-  }
-  const startTs = Math.floor(new Date(fromDateStr).getTime() / 1000) - 86400 * 7;
-  const endTs = Math.floor(new Date(toDateStr).getTime() / 1000) + 86400;
-  const params = new URLSearchParams({
-    symbol, startTimestamp: String(startTs), endTimestamp: String(endTs),
-    groupBy: 'day', aggregation: 'avg', orderBy: 'asc'
-  });
-  const url = `https://api.gold-api.com/history?${params.toString()}`;
-  const res = await fetchWithTimeout(url, { headers: { 'x-api-key': GOLD_API_KEY } });
-  if (!res.ok) throw new Error(`HTTP ${res.status} (free tier: 10 requests/hour)`);
-  const rows = await res.json();
-  if (!Array.isArray(rows) || !rows.length) throw new Error('No data returned');
-  const byDate = {};
-  rows.forEach(row => {
-    const day = row.day; // "YYYY-MM-DD"
-    const v = row.avg_price;
-    if (day && typeof v === 'number') byDate[day] = v;
-  });
-  if (Object.keys(byDate).length === 0) throw new Error('Parsed zero rows');
-  priceCache[symbol] = byDate;
-  return byDate;
-}
-
-async function fetchAlphaVantageSeries(commodityName) {
-  const spec = ALPHA_VANTAGE_SYMBOLS[commodityName];
-  if (!spec) return null;
-  if (priceCache[spec.fn]) return priceCache[spec.fn];
-  if (!ALPHA_VANTAGE_KEY || ALPHA_VANTAGE_KEY === 'YOUR_KEY_HERE') {
-    throw new Error('Add your free Alpha Vantage key at the top of the script (ALPHA_VANTAGE_KEY)');
-  }
-  const params = new URLSearchParams({ function: spec.fn, interval: spec.interval, apikey: ALPHA_VANTAGE_KEY });
-  const url = `https://www.alphavantage.co/query?${params.toString()}`;
-  const res = await fetchWithTimeout(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+async function fetchPricesJson() {
+  if (pricesJsonCache) return pricesJsonCache;
+  const res = await fetchWithTimeout('prices.json');
+  if (!res.ok) throw new Error(`HTTP ${res.status} — has the update-prices workflow run yet?`);
   const json = await res.json();
-  if (json['Error Message']) throw new Error(json['Error Message']);
-  if (json['Note'] || json['Information']) throw new Error('Rate limit hit (free tier: 25/day, 5/min) — wait a moment and retry');
-  if (!json.data || !json.data.length) throw new Error('No data returned for this symbol');
-  const byDate = {};
-  json.data.forEach(row => {
-    const v = parseFloat(row.value);
-    if (row.date && !isNaN(v)) byDate[row.date] = v;
-  });
-  if (Object.keys(byDate).length === 0) throw new Error('Parsed zero rows');
-  priceCache[spec.fn] = byDate;
-  return byDate;
+  pricesJsonCache = json;
+  return json;
 }
 
-// dispatches to the right free API depending on which commodity was picked
-async function fetchPriceSeries(commodityName, fromDateStr, toDateStr) {
-  if (GOLD_API_SYMBOLS[commodityName]) return fetchGoldApiSeries(commodityName, fromDateStr, toDateStr);
-  if (ALPHA_VANTAGE_SYMBOLS[commodityName]) return fetchAlphaVantageSeries(commodityName);
-  return null; // Soybeans — no free source found yet; manual paste box handles it
+async function fetchPriceSeries(commodityName) {
+  const json = await fetchPricesJson();
+  const byDate = json.data && json.data[commodityName];
+  if (!byDate || Object.keys(byDate).length === 0) return null;
+  return byDate;
 }
 
 // find the closest available price on or before a given report date
